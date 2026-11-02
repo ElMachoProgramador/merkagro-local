@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+*.sqlite*
+*.xlsx
+*.pem
+*.key
+*.part
+*.exe
+*.zip
+*.spec
+build*/
+dist/
+release*/
+public-build-assets/
+actualizaciones/
+!assets/seed.json
