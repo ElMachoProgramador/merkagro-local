@@ -1,0 +1,23 @@
+name: Probar y construir MERKAGRO
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - run: python -m pip install -r requirements-build.txt
+      - run: python -m unittest test_updates.py
+      - run: python build_release.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MerkagroLocal-Windows
+          path: release-public/MerkagroLocal.exe
+          retention-days: 14
