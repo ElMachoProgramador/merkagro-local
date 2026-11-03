@@ -13,12 +13,16 @@ import threading
 import webbrowser
 import zipfile
 import updater
+import ledger
+import monthly
 from datetime import datetime, timezone, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 ASSETS=Path(getattr(sys,'_MEIPASS',Path(__file__).parent))/'assets'
 DATA=Path(os.environ.get('MERKAGRO_DATA_DIR',Path(os.environ.get('LOCALAPPDATA',Path.home()))/'MerkagroLocal'))
+PRODUCTION_DATA=Path(os.environ.get('LOCALAPPDATA',Path.home()))/'MerkagroLocal'
+VERSION=updater.VERSION
 DENOMS=(100000,50000,20000,10000,5000,2000,1000,500,200,100)
 TOKEN=secrets.token_urlsafe(32)
 LOCK=threading.RLock()
@@ -48,6 +52,13 @@ def backup(destination=None):
 
 def initialize():
     DATA.mkdir(parents=True,exist_ok=True)
+    target=DATA/'merkagro.sqlite3'
+    if target.exists():
+        with connect() as c:
+            has_meta=c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta'").fetchone()
+            migrated=has_meta and c.execute("SELECT 1 FROM meta WHERE key='invoice_allocations_v1'").fetchone()
+        before=DATA/'copias'/'Antes-de-control-por-factura.sqlite3'
+        if not migrated and not before.exists():backup(before)
     with LOCK,connect() as c:
         c.executescript('''
         CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
@@ -68,6 +79,8 @@ def initialize():
                 c.execute('INSERT INTO cash_reports(created,label,counts,total,base,revenue,origin) VALUES(?,?,?,?,?,?,?)',(now().isoformat(),x['name'],json.dumps(counts),totals['total'],totals['base'],totals['revenue'],'Excel · fecha del conteo no indicada'))
             c.execute('INSERT INTO cash_draft(id,counts,updated) VALUES(1,?,?)',(json.dumps(seed['cash'][0]['counts']),now().isoformat()))
             c.execute("INSERT INTO meta VALUES('seed',?)",(json.dumps({'sources':seed['sources'],'summary_balance':seed['summary_balance'],'imported':now().isoformat()},ensure_ascii=False),))
+        ledger.migrate(c,now().isoformat())
+        monthly.migrate(c,ASSETS,DATA)
     originals=DATA/'originales'
     originals.mkdir(exist_ok=True)
     for p in ASSETS.glob('*.xlsx'):
@@ -83,6 +96,7 @@ def whole(x,name):
 def cash_totals(counts):
     if not isinstance(counts,dict) or set(counts)!={str(d) for d in DENOMS}:
         raise ValueError('Las denominaciones son fijas.')
+    counts={k:0 if v is None or v=='' else v for k,v in counts.items()}
     for k,v in counts.items():
         whole(v,'Cantidad')
         if v>10000000:raise ValueError('Cantidad demasiado grande.')
@@ -93,12 +107,14 @@ def cash_totals(counts):
 
 def state():
     with connect() as c:
+        c.execute('BEGIN')
         suppliers=[dict(r) for r in c.execute('''SELECT s.*,COALESCE(SUM(e.amount),0) AS charges,COALESCE(SUM(e.payment),0) AS payments,COALESCE(SUM(e.amount-e.payment),0) AS balance,COUNT(e.id) AS count FROM suppliers s LEFT JOIN entries e ON s.id=e.supplier_id GROUP BY s.id ORDER BY s.name''')]
         draft=dict(c.execute('SELECT * FROM cash_draft WHERE id=1').fetchone())
         draft['counts']=json.loads(draft['counts'])
         reports=[dict(r) for r in c.execute('SELECT id,created,label,total,base,revenue,origin FROM cash_reports ORDER BY id DESC')]
         info=json.loads(c.execute("SELECT value FROM meta WHERE key='seed'").fetchone()[0])
-        return {'suppliers':suppliers,'cash':draft,'reports':reports,'info':info,'today':now().date().isoformat(),'data_path':str(DATA),'totals':cash_totals(draft['counts']),'updates':UPDATES.status() if UPDATES else {'version':updater.VERSION,'status':'pendiente','repository':'','message':'Actualizaciones disponibles desde el ejecutable.'}}
+        today=now().date().isoformat();metrics=ledger.enrich(c,suppliers,today)
+        return {'suppliers':suppliers,'metrics':metrics,'cash':draft,'reports':reports,'info':info,'today':today,'data_path':str(DATA),'totals':cash_totals(draft['counts']),'version':VERSION,'local_test':False,'updates':UPDATES.status() if UPDATES else {'version':VERSION,'status':'pendiente','repository':'','message':'Actualizaciones desde el ejecutable.'}}
 
 def audit(c,action,payload):
     c.execute('INSERT INTO audit(created,action,payload) VALUES(?,?,?)',(now().isoformat(),action,json.dumps(payload,ensure_ascii=False)))
@@ -131,7 +147,9 @@ def save_entry(p):
 def save_cash(p):
     if set(p)-{'counts','version','snapshot'}:raise ValueError('Solo se pueden modificar las cantidades.')
     totals=cash_totals(p.get('counts'))
+    p['counts']={k:0 if v is None or v=='' else v for k,v in p['counts'].items()}
     with LOCK,connect() as c:
+        c.execute('BEGIN IMMEDIATE')
         old=c.execute('SELECT * FROM cash_draft WHERE id=1').fetchone()
         if CLOSING:raise ValueError('El programa se está cerrando. No se guardó este conteo.')
         if p.get('version')!=old['version']:raise ValueError('El conteo cambió en otra ventana. Actualiza para consultar la versión guardada.')
@@ -165,9 +183,17 @@ class Handler(BaseHTTPRequestHandler):
             # Fixed loopback Host prevents DNS rebinding and remote host access.
             if self.headers.get('Host')!=f'127.0.0.1:{self.server.server_port}':return self.send({'error':'Acceso local requerido.'},403)
             if self.path=='/':
-                return self.send((ASSETS/'index.html').read_text(encoding='utf-8').replace('__TOKEN__',TOKEN),mime='text/html; charset=utf-8')
+                return self.send((ASSETS/'beta.html').read_text(encoding='utf-8').replace('__TOKEN__',TOKEN),mime='text/html; charset=utf-8')
+            if self.path=='/beta.js':return self.send((ASSETS/'beta.js').read_bytes(),mime='text/javascript; charset=utf-8')
             if self.path=='/favicon.ico':return self.send(b'',204,'image/x-icon')
             if self.path=='/api/state':return self.send(state())
+            if self.path.startswith('/api/monthly/'):
+                with connect() as c:return self.send(monthly.view(c,self.path.rsplit('/',1)[1]))
+            if self.path.startswith('/api/ledger/'):
+                sid=int(self.path.rsplit('/',1)[1])
+                with connect() as c:
+                    c.execute('BEGIN')
+                    return self.send(ledger.view(c,sid,now().date().isoformat()))
             if self.path.startswith('/api/entries/'):
                 sid=int(self.path.rsplit('/',1)[1])
                 with connect() as c:
@@ -193,10 +219,16 @@ class Handler(BaseHTTPRequestHandler):
             if CLOSING:return self.send({'error':'El programa se está cerrando para actualizar. No se guardó este cambio.'},503)
             if self.path=='/api/updates':
                 if not UPDATES:raise ValueError('Abre el programa desde el ejecutable.')
-                if 'repository' in p:UPDATES.configure(p['repository'])
-                else:UPDATES.check_async()
+                UPDATES.check_async()
                 return self.send(UPDATES.status())
-            if self.path=='/api/entry':return self.send(save_entry(p))
+            actions={'/api/invoice':ledger.invoice,'/api/payment':ledger.pay,'/api/reconcile':ledger.reconcile,'/api/invoice-edit':ledger.edit_invoice,'/api/monthly':monthly.save}
+            if self.path in actions:
+                with LOCK,connect() as c:
+                    c.execute('BEGIN IMMEDIATE')
+                    if CLOSING:raise ValueError('El programa está cerrándose. Inténtalo al abrir de nuevo.')
+                    result=actions[self.path](c,p,now().date().isoformat(),now().isoformat())
+                return self.send(result)
+            if self.path=='/api/entry':raise ValueError('Usa Recibir factura o Pagar / abonar para mantener el control por factura.')
             if self.path=='/api/cash':return self.send(save_cash(p))
             if self.path=='/api/exit':
                 with LOCK:

@@ -1,4 +1,20 @@
-# MERKAGRO Local
+# MERKAGRO Local 1.2
+
+## Novedades de la versión 1.2
+
+- Panel compacto con total de todos los proveedores y detalle individual.
+- Fecha de recepción por factura: verde de 0 a 25 días, amarillo de 26 a 30, rojo después de 30.
+- Búsqueda por nombre o palabra clave al recibir facturas y registrar abonos.
+- Pagos distribuidos explícitamente entre varias facturas, completos o parciales; las canceladas permanecen tachadas.
+- Número de recibo obligatorio en pagos de efectivo y observaciones automáticas.
+- Reporte de turno compacto: campos vacíos equivalen a cero.
+- Compras de contado y gastos por mes, con categorías de servicios, nómina, arriendo, transporte, alimentación, mantenimiento y otros.
+
+## Migración segura
+
+La actualización conserva los saldos y crea una copia previa. Los abonos históricos con referencias ambiguas quedan por conciliar: el usuario selecciona a qué facturas corresponden sin registrar otro pago.
+
+Compras y gastos se recuperan del Excel original archivado en el computador, sin descargar datos comerciales de GitHub. Las fechas escritas como texto se identifican; cuando solo se conoce el mes no se inventa un día. Las categorías iniciales se sugieren a partir del concepto y pueden corregirse.
 
 Aplicación para Windows de facturas pendientes por pagar y reporte de turno. Funciona sin internet para registrar datos. Solo necesita conexión para buscar y descargar actualizaciones.
 

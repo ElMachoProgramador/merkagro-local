@@ -6,7 +6,7 @@ from urllib.parse import urlparse
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 APP_ID='merkagro-local-facturas-turno'
-VERSION='1.1.0'
+VERSION='1.2.0'
 MAX_SIZE=100*1024*1024
 HOSTS={'github.com','release-assets.githubusercontent.com','objects.githubusercontent.com'}
 
